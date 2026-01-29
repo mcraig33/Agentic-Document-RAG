@@ -3,6 +3,7 @@ Parse a document with ADE and Landing.AI API
 """
 import os
 import json
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from landingai_ade import LandingAIADE
@@ -58,23 +59,63 @@ def parse_document(document_path: str | Path, output_dir: str | Path = "./ade_ou
     markdown_content = parse_response.markdown
     
     # Extract chunks/grounding information
-    # Convert grounding to a serializable format
+    # Convert grounding to a serializable format, and populate text using PDF + bbox
     chunks_data = []
-    if hasattr(parse_response, 'grounding') and parse_response.grounding:
-        for chunk_id, grounding in parse_response.grounding.items():
-            chunk_info = {
-                "id": chunk_id,
-                "type": grounding.type if hasattr(grounding, 'type') else None,
-                "page": grounding.page if hasattr(grounding, 'page') else None,
-                "box": {
-                    "left": grounding.box.left if hasattr(grounding, 'box') else None,
-                    "top": grounding.box.top if hasattr(grounding, 'box') else None,
-                    "right": grounding.box.right if hasattr(grounding, 'box') else None,
-                    "bottom": grounding.box.bottom if hasattr(grounding, 'box') else None,
-                } if hasattr(grounding, 'box') else None,
-                "text": grounding.text if hasattr(grounding, 'text') else None,
-            }
-            chunks_data.append(chunk_info)
+    if hasattr(parse_response, "grounding") and parse_response.grounding:
+        # Open the PDF once so we can extract text for each bounding box
+        doc = fitz.open(str(doc_path))
+
+        try:
+            for chunk_id, grounding in parse_response.grounding.items():
+                # Base fields from grounding
+                page_index = grounding.page if hasattr(grounding, "page") else None
+                box = grounding.box if hasattr(grounding, "box") else None
+
+                # Default text from grounding if present (often None)
+                text = None
+                if hasattr(grounding, "text") and grounding.text:
+                    text = grounding.text
+                elif hasattr(grounding, "content") and grounding.content:
+                    text = grounding.content
+                elif hasattr(grounding, "value") and grounding.value:
+                    text = grounding.value
+
+                # If we still don't have text but have page + bbox, extract from PDF
+                if (not text) and (page_index is not None) and box is not None:
+                    try:
+                        page = doc[page_index]
+                        page_rect = page.rect
+
+                        # ADE bbox is in normalized coordinates [0,1]; convert to PDF points
+                        x0 = float(box.left) * page_rect.width
+                        y0 = float(box.top) * page_rect.height
+                        x1 = float(box.right) * page_rect.width
+                        y1 = float(box.bottom) * page_rect.height
+
+                        clip_rect = fitz.Rect(x0, y0, x1, y1)
+                        extracted = page.get_text("text", clip=clip_rect) or ""
+                        text = extracted.strip() or None
+                    except Exception:
+                        # Fail silently for this chunk; text will remain None
+                        text = text or None
+
+                chunk_info = {
+                    "id": chunk_id,
+                    "type": grounding.type if hasattr(grounding, "type") else None,
+                    "page": page_index,
+                    "box": {
+                        "left": float(box.left) if box is not None else None,
+                        "top": float(box.top) if box is not None else None,
+                        "right": float(box.right) if box is not None else None,
+                        "bottom": float(box.bottom) if box is not None else None,
+                    }
+                    if box is not None
+                    else None,
+                    "text": text,
+                }
+                chunks_data.append(chunk_info)
+        finally:
+            doc.close()
     
     # Save markdown file
     with open(markdown_path, "w", encoding="utf-8") as f:
