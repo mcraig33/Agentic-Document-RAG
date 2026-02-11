@@ -8,6 +8,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 from landingai_ade import LandingAIADE
 
+# Import PyMuPDF for text extraction using bounding boxes
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    try:
+        import PyMuPDF as fitz
+    except ImportError:
+        raise ImportError(
+            "PyMuPDF is required for text extraction. Install it with: pip install PyMuPDF"
+        )
+
 # Load environment variables
 load_dotenv()
 
